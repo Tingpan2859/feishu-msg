@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>飞书定时消息</title>
+<style>
+  :root{
+    --blue:#3370ff; --blue-dark:#2455d4; --bg:#f4f6fa; --card:#ffffff;
+    --text:#1f2329; --muted:#8f959e; --border:#e5e6eb;
+    --green:#34a853; --red:#e5484d; --orange:#e8871e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--text);min-height:100vh}
+  .wrap{max-width:720px;margin:0 auto;padding:16px 16px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 2px}
+  header h1{font-size:20px}
+  .hidden{display:none!important}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;
+        padding:18px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .card h2{font-size:16px;margin-bottom:14px}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+  input,select,textarea{width:100%;padding:10px 12px;font-size:15px;border:1px solid var(--border);
+        border-radius:8px;background:#fff;color:var(--text);font-family:inherit}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue)}
+  textarea{min-height:110px;resize:vertical;line-height:1.6}
+  button{padding:10px 18px;font-size:15px;border:none;border-radius:8px;cursor:pointer;
+        background:var(--blue);color:#fff;font-family:inherit}
+  button:hover{background:var(--blue-dark)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .btn-full{width:100%;padding:12px;font-size:16px}
+  .btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);padding:6px 12px;font-size:13px}
+  .btn-ghost:hover{background:#f2f3f5;color:var(--text)}
+  .btn-danger{background:transparent;color:var(--red);border:1px solid var(--border);padding:6px 12px;font-size:13px}
+  .btn-danger:hover{background:#fff0f0}
+  .msg-item{border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px}
+  .msg-item .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px}
+  .msg-item .content{white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.6;margin-bottom:8px}
+  .msg-item .meta{font-size:12px;color:var(--muted)}
+  .tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .tag-pending{background:#fff4e5;color:var(--orange)}
+  .tag-sent{background:#e8f6ec;color:var(--green)}
+  .tag-cancelled{background:#f2f3f5;color:var(--muted)}
+  .tag-repeat{background:#eef3ff;color:var(--blue)}
+  .empty{color:var(--muted);font-size:14px;text-align:center;padding:16px 0}
+  .tip{font-size:13px;color:var(--muted);line-height:1.7;background:#f7f8fa;border-radius:8px;padding:10px 12px;margin-top:10px}
+  .tip b{color:var(--text)}
+  details summary{cursor:pointer;font-size:16px;font-weight:600;list-style:none;display:flex;align-items:center;gap:6px}
+  details summary::before{content:"▸";transition:transform .15s}
+  details[open] summary::before{transform:rotate(90deg)}
+  details>div{margin-top:14px}
+  .hook-row{display:flex;justify-content:space-between;align-items:center;gap:10px;
+        border-bottom:1px solid var(--border);padding:10px 2px}
+  .hook-row:last-child{border-bottom:none}
+  .hook-row .name{font-size:14px;font-weight:500}
+  .hook-row .url{font-size:12px;color:var(--muted);word-break:break-all}
+  .row-btns{display:flex;gap:6px;flex-shrink:0}
+  #toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%);background:#1f2329;color:#fff;
+        padding:10px 20px;border-radius:8px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .3s;z-index:99;max-width:90%}
+  #toast.show{opacity:1}
+  .login-box{max-width:360px;margin:60px auto}
+  .login-box h2{text-align:center;margin-bottom:18px}
+  @media(max-width:480px){ .hook-row{flex-direction:column;align-items:flex-start} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 登录 ============ -->
+  <section id="view-login" class="hidden">
+    <div class="card login-box">
+      <h2>📨 飞书定时消息</h2>
+      <div class="field"><label>邮箱</label>
+        <input id="login-email" type="email" placeholder="登录邮箱" autocomplete="username"></div>
+      <div class="field"><label>密码</label>
+        <input id="login-pw" type="password" placeholder="登录密码" autocomplete="current-password"
+               onkeydown="if(event.key==='Enter')doLogin()"></div>
+      <button class="btn-full" id="login-btn" onclick="doLogin()">登录</button>
+      <p class="tip">和岗位测评后台是同一个账号。</p>
+    </div>
+  </section>
+
+  <!-- ============ 主界面 ============ -->
+  <section id="view-main" class="hidden">
+    <header>
+      <h1>📨 飞书定时消息</h1>
+      <button class="btn-ghost" onclick="doLogout()">退出登录</button>
+    </header>
+
+    <!-- 新建 -->
+    <div class="card">
+      <h2>✏️ 新建定时消息</h2>
+      <div class="field"><label>发送到哪个群</label>
+        <select id="new-webhook"><option value="">加载中…</option></select></div>
+      <div class="field"><label>发送时间（重复发送时=第一次发送的时间）</label>
+        <input id="new-time" type="datetime-local"></div>
+      <div class="field"><label>重复发送</label>
+        <select id="new-repeat" onchange="onRepeatChange()">
+          <option value="">不重复（只发一次）</option>
+          <option value="10">每 10 分钟</option>
+          <option value="30">每 30 分钟</option>
+          <option value="60">每 1 小时</option>
+          <option value="120">每 2 小时</option>
+          <option value="240">每 4 小时</option>
+          <option value="1440">每天一次</option>
+          <option value="10080">每周一次</option>
+          <option value="custom">自定义间隔…</option>
+        </select></div>
+      <div class="field hidden" id="field-custom-repeat"><label>自定义间隔（分钟，最少 5 分钟）</label>
+        <input id="new-repeat-custom" type="number" min="5" step="1" placeholder="例如 45 = 每 45 分钟发一次"></div>
+      <div class="field hidden" id="field-repeat-until"><label>重复到什么时候结束（留空 = 一直重复，直到手动取消）</label>
+        <input id="new-until" type="datetime-local"></div>
+      <div class="field"><label>消息内容</label>
+        <textarea id="new-content" placeholder="要发送的文字内容，支持换行"></textarea></div>
+      <button class="btn-full" id="new-btn" onclick="createMessage()">⏰ 定时发送</button>
+      <p class="tip">系统<b>每分钟检查一次</b>，实际发送时间可能比设定晚 1 分钟以内。<br>
+      选了「重复发送」的消息会一直按间隔发下去，随时可在下方「待发送」里点<b>停止</b>。</p>
+    </div>
+
+    <!-- 待发送 -->
+    <div class="card">
+      <h2>🕐 待发送</h2>
+      <div id="list-pending"><p class="empty">加载中…</p></div>
+    </div>
+
+    <!-- 记录 -->
+    <div class="card">
+      <h2>📋 发送记录（最近 30 条）</h2>
+      <div id="list-history"><p class="empty">加载中…</p></div>
+    </div>
+
+    <!-- 群管理 -->
+    <div class="card">
+      <details id="hooks-details">
+        <summary>⚙️ 群管理（添加 / 删除群机器人）</summary>
+        <div>
+          <div id="list-hooks"><p class="empty">加载中…</p></div>
+          <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+            <div class="field"><label>群名称（自己起个好认的名字）</label>
+              <input id="hook-name" placeholder="例如：CNO 分拣组"></div>
+            <div class="field"><label>Webhook 地址</label>
+              <input id="hook-url" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…"></div>
+            <button onclick="addWebhook()">＋ 添加群</button>
+          </div>
+          <p class="tip">
+            <b>怎么拿到 Webhook 地址？</b><br>
+            1. 打开飞书群 → 右上角「…」→ 设置 → <b>群机器人</b> → 添加机器人 → <b>自定义机器人</b><br>
+            2. 起个名字（比如"定时通知"）→ 添加 → 复制 <b>Webhook 地址</b> 粘贴到上面<br>
+            3. 安全设置<b>不要勾选「签名校验」</b>（勾了会发不出去）；「自定义关键词」也建议不填
+          </p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+</div>
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL='https://eyivdjgaziepvhuxtrma.supabase.co';
+const SUPABASE_KEY='sb_publishable_S-jg61KZdUmbyTStoPv6DQ_2l_0Oxfb';
+const SB=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+let webhooks=[];
+
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer=setTimeout(()=>t.classList.remove('show'),2600);
+}
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtTime(iso){
+  if(!iso) return '';
+  return new Date(iso).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+}
+
+/* ---------- 登录 ---------- */
+async function doLogin(){
+  const email=document.getElementById('login-email').value.trim();
+  const pw=document.getElementById('login-pw').value;
+  if(!email||!pw){ toast('请输入邮箱和密码'); return; }
+  const btn=document.getElementById('login-btn'); btn.disabled=true; btn.textContent='登录中…';
+  const {error}=await SB.auth.signInWithPassword({email,password:pw});
+  btn.disabled=false; btn.textContent='登录';
+  if(error){ toast('登录失败：'+(error.message==='Invalid login credentials'?'邮箱或密码不对':error.message)); return; }
+  enterMain();
+}
+async function doLogout(){ await SB.auth.signOut(); location.reload(); }
+
+/* ---------- 数据加载 ---------- */
+async function loadWebhooks(){
+  const {data,error}=await SB.from('msg_webhooks').select('*').order('created_at');
+  if(error){ toast('加载群列表失败：'+error.message); return; }
+  webhooks=data||[];
+  const sel=document.getElementById('new-webhook');
+  if(!webhooks.length){
+    sel.innerHTML='<option value="">还没有群，请先在下方「群管理」添加</option>';
+  }else{
+    const cur=sel.value;
+    sel.innerHTML=webhooks.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('');
+    if(cur && webhooks.some(w=>w.id===cur)) sel.value=cur;
+  }
+  const box=document.getElementById('list-hooks');
+  box.innerHTML = webhooks.length ? webhooks.map(w=>`
+    <div class="hook-row">
+      <div><div class="name">${esc(w.name)}</div><div class="url">${esc(w.url)}</div></div>
+      <div class="row-btns">
+        <button class="btn-ghost" onclick="testWebhook('${w.id}')">发测试</button>
+        <button class="btn-danger" onclick="deleteWebhook('${w.id}','${esc(w.name)}')">删除</button>
+      </div>
+    </div>`).join('') : '<p class="empty">还没有添加任何群</p>';
+}
+
+async function loadMessages(){
+  const {data,error}=await SB.from('scheduled_messages')
+    .select('id,content,send_at,status,sent_at,sent_count,repeat_minutes,repeat_until,webhook_id,msg_webhooks(name)')
+    .order('send_at',{ascending:false}).limit(200);
+  if(error){ toast('加载消息失败：'+error.message); return; }
+  const all=data||[];
+  const pending=all.filter(m=>m.status==='pending').sort((a,b)=>a.send_at<b.send_at?-1:1);
+  const history=all.filter(m=>m.status!=='pending').slice(0,30);
+
+  const groupName=m=>m.msg_webhooks?m.msg_webhooks.name:'（群已删除）';
+  document.getElementById('list-pending').innerHTML = pending.length ? pending.map(m=>{
+    const rep=m.repeat_minutes
+      ? `<span class="tag tag-repeat">🔁 ${fmtRepeat(m.repeat_minutes)}</span>` : '';
+    const extra=m.repeat_minutes
+      ? `${m.sent_count?' ｜ 已发 '+m.sent_count+' 次':''}${m.repeat_until?' ｜ 到 '+fmtTime(m.repeat_until)+' 结束':' ｜ 一直重复'}`
+      : '';
+    return `
+    <div class="msg-item">
+      <div class="top"><span>
+        <span class="tag tag-pending">待发送</span> ${rep}</span>
+        <button class="btn-danger" onclick="cancelMessage('${m.id}',${!!m.repeat_minutes})">${m.repeat_minutes?'停止':'取消'}</button></div>
+      <div class="content">${esc(m.content)}</div>
+      <div class="meta">📍 ${esc(groupName(m))} ｜ ⏰ ${m.repeat_minutes?'下次 ':''}${fmtTime(m.send_at)} 发送${extra}</div>
+    </div>`;}).join('') : '<p class="empty">没有待发送的消息</p>';
+
+  const tagOf=s=>s==='sent'?'<span class="tag tag-sent">已发送</span>':'<span class="tag tag-cancelled">已取消</span>';
+  document.getElementById('list-history').innerHTML = history.length ? history.map(m=>{
+    const times=m.sent_count>1?'（共发 '+m.sent_count+' 次）':'';
+    return `
+    <div class="msg-item">
+      <div class="top"><span>${tagOf(m.status)} ${m.repeat_minutes?'<span class="tag tag-repeat">🔁 '+fmtRepeat(m.repeat_minutes)+'</span>':''}</span></div>
+      <div class="content">${esc(m.content)}</div>
+      <div class="meta">📍 ${esc(groupName(m))} ｜ ${m.status==='sent'?'✅ 最后一次 '+fmtTime(m.sent_at)+' 已发出'+times:(m.sent_count?'已发 '+m.sent_count+' 次后停止':'原定 '+fmtTime(m.send_at))}</div>
+    </div>`;}).join('') : '<p class="empty">还没有发送记录</p>';
+}
+
+async function refreshAll(){ await Promise.all([loadWebhooks(),loadMessages()]); }
+
+/* ---------- 新建 / 取消 ---------- */
+function onRepeatChange(){
+  const v=document.getElementById('new-repeat').value;
+  document.getElementById('field-custom-repeat').classList.toggle('hidden', v!=='custom');
+  document.getElementById('field-repeat-until').classList.toggle('hidden', v==='');
+}
+function fmtRepeat(mins){
+  if(!mins) return '';
+  if(mins%10080===0){ const n=mins/10080; return n===1?'每周':'每 '+n+' 周'; }
+  if(mins%1440===0){ const n=mins/1440; return n===1?'每天':'每 '+n+' 天'; }
+  if(mins%60===0) return '每 '+mins/60+' 小时';
+  return '每 '+mins+' 分钟';
+}
+async function createMessage(){
+  const webhookId=document.getElementById('new-webhook').value;
+  const timeVal=document.getElementById('new-time').value;
+  const content=document.getElementById('new-content').value.trim();
+  if(!webhookId){ toast('请先选择要发送的群（没有就去下方群管理添加）'); return; }
+  if(!timeVal){ toast('请选择发送时间'); return; }
+  if(!content){ toast('请填写消息内容'); return; }
+  const sendAt=new Date(timeVal);
+  if(sendAt.getTime()<Date.now()-60000){ toast('发送时间已经过了，请选一个将来的时间'); return; }
+
+  // 重复设置
+  const repSel=document.getElementById('new-repeat').value;
+  let repeatMinutes=null;
+  if(repSel==='custom'){
+    repeatMinutes=parseInt(document.getElementById('new-repeat-custom').value,10);
+    if(!repeatMinutes||repeatMinutes<5){ toast('自定义间隔最少 5 分钟'); return; }
+  }else if(repSel){
+    repeatMinutes=parseInt(repSel,10);
+  }
+  let repeatUntil=null;
+  if(repeatMinutes){
+    const untilVal=document.getElementById('new-until').value;
+    if(untilVal){
+      const until=new Date(untilVal);
+      if(until.getTime()<=sendAt.getTime()){ toast('结束时间要晚于第一次发送时间'); return; }
+      repeatUntil=until.toISOString();
+    }
+  }
+
+  const btn=document.getElementById('new-btn'); btn.disabled=true; btn.textContent='提交中…';
+  const {error}=await SB.from('scheduled_messages')
+    .insert({content, send_at:sendAt.toISOString(), webhook_id:webhookId,
+             repeat_minutes:repeatMinutes, repeat_until:repeatUntil});
+  btn.disabled=false; btn.textContent='⏰ 定时发送';
+  if(error){ toast('提交失败：'+error.message); return; }
+  document.getElementById('new-content').value='';
+  toast(repeatMinutes
+    ? '✅ 已设置：'+fmtRepeat(repeatMinutes)+'发一次，首次 '+fmtTime(sendAt.toISOString())
+    : '✅ 已加入定时队列，将在 '+fmtTime(sendAt.toISOString())+' 发送');
+  loadMessages();
+}
+
+async function cancelMessage(id,isRepeat){
+  if(!confirm(isRepeat?'确定停止这条重复消息吗？停止后不再发送。':'确定取消这条待发送的消息吗？')) return;
+  const {error}=await SB.from('scheduled_messages')
+    .update({status:'cancelled'}).eq('id',id).eq('status','pending');
+  if(error){ toast('取消失败：'+error.message); return; }
+  toast('已取消'); loadMessages();
+}
+
+/* ---------- 群管理 ---------- */
+async function addWebhook(){
+  const name=document.getElementById('hook-name').value.trim();
+  const url=document.getElementById('hook-url').value.trim();
+  if(!name||!url){ toast('请填写群名称和 Webhook 地址'); return; }
+  if(!url.includes('/open-apis/bot/')){
+    if(!confirm('这个地址看起来不像飞书群机器人的 Webhook 地址，确定要添加吗？')) return;
+  }
+  const {error}=await SB.from('msg_webhooks').insert({name,url});
+  if(error){ toast('添加失败：'+error.message); return; }
+  document.getElementById('hook-name').value='';
+  document.getElementById('hook-url').value='';
+  toast('✅ 已添加「'+name+'」，建议点「发测试」确认能收到');
+  loadWebhooks();
+}
+
+async function deleteWebhook(id,name){
+  if(!confirm('确定删除群「'+name+'」吗？\n该群的所有消息记录（包括待发送的）也会一起删除。')) return;
+  const {error}=await SB.from('msg_webhooks').delete().eq('id',id);
+  if(error){ toast('删除失败：'+error.message); return; }
+  toast('已删除'); refreshAll();
+}
+
+async function testWebhook(id){
+  const {error}=await SB.from('scheduled_messages').insert({
+    content:'【测试】定时消息工具连接正常 ✅',
+    send_at:new Date().toISOString(),
+    webhook_id:id
+  });
+  if(error){ toast('发送失败：'+error.message); return; }
+  toast('测试消息已排队，1 分钟内会发到群里，请留意');
+  loadMessages();
+}
+
+/* ---------- 入口 ---------- */
+function enterMain(){
+  document.getElementById('view-login').classList.add('hidden');
+  document.getElementById('view-main').classList.remove('hidden');
+  const t=new Date(Date.now()+10*60000); t.setSeconds(0,0);
+  const p=n=>String(n).padStart(2,'0');
+  document.getElementById('new-time').value=
+    `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())}T${p(t.getHours())}:${p(t.getMinutes())}`;
+  refreshAll();
+  setInterval(loadMessages,30000);
+}
+
+(async function init(){
+  const {data}=await SB.auth.getSession();
+  if(data && data.session){ enterMain(); }
+  else{ document.getElementById('view-login').classList.remove('hidden'); }
+})();
+</script>
+</body>
+</html>
