@@ -91,9 +91,9 @@
 
     <!-- 新建 -->
     <div class="card">
-      <h2>✏️ 新建定时消息</h2>
-      <div class="field"><label>发送到哪个群</label>
-        <select id="new-webhook"><option value="">加载中…</option></select></div>
+      <h2 id="form-title">✏️ 新建定时消息</h2>
+      <div class="field"><label>发送到哪些群（可多选，批量发同一条）</label>
+        <div id="new-webhooks" style="border:1px solid var(--border);border-radius:8px;padding:8px 12px;max-height:170px;overflow:auto">加载中…</div></div>
       <div class="field"><label>发送时间（重复发送时=第一次发送的时间）</label>
         <input id="new-time" type="datetime-local"></div>
       <div class="field"><label>重复发送</label>
@@ -114,7 +114,8 @@
         <input id="new-until" type="datetime-local"></div>
       <div class="field"><label>消息内容</label>
         <textarea id="new-content" placeholder="要发送的文字内容，支持换行"></textarea></div>
-      <button class="btn-full" id="new-btn" onclick="createMessage()">⏰ 定时发送</button>
+      <button class="btn-full" id="new-btn" onclick="submitMessage()">⏰ 定时发送</button>
+      <button class="btn-ghost hidden" id="cancel-edit-btn" style="width:100%;margin-top:8px" onclick="cancelEdit()">取消编辑</button>
       <p class="tip">系统<b>每分钟检查一次</b>，实际发送时间可能比设定晚 1 分钟以内。<br>
       选了「重复发送」的消息会一直按间隔发下去，随时可在下方「待发送」里点<b>停止</b>。</p>
     </div>
@@ -165,6 +166,14 @@ const SUPABASE_KEY='sb_publishable_EociSjDeQp4v8XWgyKoW6w_vkb0Z2cd';
 const SB=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 
 let webhooks=[];
+let allMessages=[];
+let editingId=null;
+
+function getCheckedWebhooks(){ return [...document.querySelectorAll('.wh-check:checked')].map(c=>c.value); }
+function toggleAllWebhooks(on){ document.querySelectorAll('.wh-check').forEach(c=>c.checked=on); }
+function setCheckedWebhooks(ids){ const s=new Set(ids); document.querySelectorAll('.wh-check').forEach(c=>c.checked=s.has(c.value)); }
+function toLocalInput(iso){ const d=new Date(iso); const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
 
 function toast(msg){
   const t=document.getElementById('toast');
@@ -195,13 +204,15 @@ async function loadWebhooks(){
   const {data,error}=await SB.from('msg_webhooks').select('*').order('created_at');
   if(error){ toast('加载群列表失败：'+error.message); return; }
   webhooks=data||[];
-  const sel=document.getElementById('new-webhook');
+  const box0=document.getElementById('new-webhooks');
+  const wasChecked=new Set(getCheckedWebhooks());
   if(!webhooks.length){
-    sel.innerHTML='<option value="">还没有群，请先在下方「群管理」添加</option>';
+    box0.innerHTML='<span style="color:var(--muted);font-size:14px">还没有群，请先在下方「群管理」添加</span>';
   }else{
-    const cur=sel.value;
-    sel.innerHTML=webhooks.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('');
-    if(cur && webhooks.some(w=>w.id===cur)) sel.value=cur;
+    box0.innerHTML =
+      (webhooks.length>1?`<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:14px;color:var(--muted);cursor:pointer;border-bottom:1px solid var(--border);margin-bottom:4px"><input type="checkbox" style="width:auto" onchange="toggleAllWebhooks(this.checked)"> 全选</label>`:'')
+      + webhooks.map(w=>`<label style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:15px;cursor:pointer">
+          <input type="checkbox" class="wh-check" value="${w.id}" style="width:auto" ${wasChecked.has(w.id)?'checked':''}> ${esc(w.name)}</label>`).join('');
   }
   const box=document.getElementById('list-hooks');
   box.innerHTML = webhooks.length ? webhooks.map(w=>`
@@ -220,6 +231,7 @@ async function loadMessages(){
     .order('send_at',{ascending:false}).limit(200);
   if(error){ toast('加载消息失败：'+error.message); return; }
   const all=data||[];
+  allMessages=all;
   const pending=all.filter(m=>m.status==='pending').sort((a,b)=>a.send_at<b.send_at?-1:1);
   const history=all.filter(m=>m.status!=='pending').slice(0,30);
 
@@ -232,9 +244,13 @@ async function loadMessages(){
       : '';
     return `
     <div class="msg-item">
-      <div class="top"><span>
-        <span class="tag tag-pending">待发送</span> ${rep}</span>
-        <button class="btn-danger" onclick="cancelMessage('${m.id}',${!!m.repeat_minutes})">${m.repeat_minutes?'停止':'取消'}</button></div>
+      <div class="top">
+        <span><span class="tag tag-pending">待发送</span> ${rep}</span>
+        <span class="row-btns">
+          <button class="btn-ghost" onclick="startEdit('${m.id}')">编辑</button>
+          <button class="btn-danger" onclick="cancelMessage('${m.id}',${!!m.repeat_minutes})">${m.repeat_minutes?'停止':'取消'}</button>
+        </span>
+      </div>
       <div class="content">${esc(m.content)}</div>
       <div class="meta">📍 ${esc(groupName(m))} ｜ ⏰ ${m.repeat_minutes?'下次 ':''}${fmtTime(m.send_at)} 发送${extra}</div>
     </div>`;}).join('') : '<p class="empty">没有待发送的消息</p>';
@@ -265,11 +281,11 @@ function fmtRepeat(mins){
   if(mins%60===0) return '每 '+mins/60+' 小时';
   return '每 '+mins+' 分钟';
 }
-async function createMessage(){
-  const webhookId=document.getElementById('new-webhook').value;
+async function submitMessage(){
+  const groupIds=getCheckedWebhooks();
   const timeVal=document.getElementById('new-time').value;
   const content=document.getElementById('new-content').value.trim();
-  if(!webhookId){ toast('请先选择要发送的群（没有就去下方群管理添加）'); return; }
+  if(!groupIds.length){ toast('请至少勾选一个群（可多选；没有就去下方群管理添加）'); return; }
   if(!timeVal){ toast('请选择发送时间'); return; }
   if(!content){ toast('请填写消息内容'); return; }
   const sendAt=new Date(timeVal);
@@ -294,17 +310,57 @@ async function createMessage(){
     }
   }
 
-  const btn=document.getElementById('new-btn'); btn.disabled=true; btn.textContent='提交中…';
-  const {error}=await SB.from('scheduled_messages')
-    .insert({content, send_at:sendAt.toISOString(), webhook_id:webhookId,
-             repeat_minutes:repeatMinutes, repeat_until:repeatUntil});
-  btn.disabled=false; btn.textContent='⏰ 定时发送';
-  if(error){ toast('提交失败：'+error.message); return; }
-  document.getElementById('new-content').value='';
-  toast(repeatMinutes
-    ? '✅ 已设置：'+fmtRepeat(repeatMinutes)+'发一次，首次 '+fmtTime(sendAt.toISOString())
-    : '✅ 已加入定时队列，将在 '+fmtTime(sendAt.toISOString())+' 发送');
+  const base={content, send_at:sendAt.toISOString(), repeat_minutes:repeatMinutes, repeat_until:repeatUntil};
+  const btn=document.getElementById('new-btn'); btn.disabled=true; btn.textContent=editingId?'保存中…':'提交中…';
+  let error;
+  if(editingId){
+    if(groupIds.length>1) toast('编辑只更新这一条，已用你勾的第一个群');
+    ({error}=await SB.from('scheduled_messages')
+      .update({...base, webhook_id:groupIds[0], attempt_count:0, dispatched_at:null, last_request_id:null})
+      .eq('id',editingId).eq('status','pending'));
+  }else{
+    const rows=groupIds.map(id=>({...base, webhook_id:id}));
+    ({error}=await SB.from('scheduled_messages').insert(rows));
+  }
+  btn.disabled=false;
+  if(error){ btn.textContent=editingId?'💾 保存修改':'⏰ 定时发送'; toast((editingId?'保存':'提交')+'失败：'+error.message); return; }
+  const wasEdit=!!editingId;
+  cancelEdit();  // 重置表单 + 退出编辑态
+  toast(wasEdit ? '✅ 已保存修改'
+    : (repeatMinutes
+        ? '✅ 已设置 '+fmtRepeat(repeatMinutes)+'，发到 '+groupIds.length+' 个群'
+        : '✅ 已加入队列，发到 '+groupIds.length+' 个群'));
   loadMessages();
+}
+
+function startEdit(id){
+  const m=(allMessages||[]).find(x=>x.id===id);
+  if(!m){ toast('找不到这条消息，请刷新'); return; }
+  editingId=id;
+  document.getElementById('form-title').textContent='✏️ 编辑定时消息';
+  document.getElementById('new-btn').textContent='💾 保存修改';
+  document.getElementById('cancel-edit-btn').classList.remove('hidden');
+  setCheckedWebhooks([m.webhook_id]);
+  document.getElementById('new-time').value=toLocalInput(m.send_at);
+  document.getElementById('new-content').value=m.content||'';
+  const repSel=document.getElementById('new-repeat');
+  const opts=[...repSel.options].map(o=>o.value);
+  if(!m.repeat_minutes) repSel.value='';
+  else if(opts.includes(String(m.repeat_minutes))) repSel.value=String(m.repeat_minutes);
+  else { repSel.value='custom'; document.getElementById('new-repeat-custom').value=m.repeat_minutes; }
+  onRepeatChange();
+  document.getElementById('new-until').value = m.repeat_until ? toLocalInput(m.repeat_until) : '';
+  window.scrollTo({top:0,behavior:'smooth'});
+  toast('已载入这条消息，改完点「保存修改」');
+}
+
+function cancelEdit(){
+  editingId=null;
+  document.getElementById('form-title').textContent='✏️ 新建定时消息';
+  document.getElementById('new-btn').textContent='⏰ 定时发送';
+  document.getElementById('cancel-edit-btn').classList.add('hidden');
+  document.getElementById('new-content').value='';
+  toggleAllWebhooks(false);
 }
 
 async function cancelMessage(id,isRepeat){
