@@ -314,10 +314,15 @@ async function submitMessage(){
   const btn=document.getElementById('new-btn'); btn.disabled=true; btn.textContent=editingId?'保存中…':'提交中…';
   let error;
   if(editingId){
-    if(groupIds.length>1) toast('编辑只更新这一条，已用你勾的第一个群');
+    // 当前这条改成勾的第一个群
     ({error}=await SB.from('scheduled_messages')
       .update({...base, webhook_id:groupIds[0], attempt_count:0, dispatched_at:null, last_request_id:null})
       .eq('id',editingId).eq('status','pending'));
+    // 多勾的群：补成新消息（一群一条），这样编辑里全选也能发到所有群
+    if(!error && groupIds.length>1){
+      const extra=groupIds.slice(1).map(id=>({...base, webhook_id:id}));
+      ({error}=await SB.from('scheduled_messages').insert(extra));
+    }
   }else{
     const rows=groupIds.map(id=>({...base, webhook_id:id}));
     ({error}=await SB.from('scheduled_messages').insert(rows));
@@ -326,7 +331,7 @@ async function submitMessage(){
   if(error){ btn.textContent=editingId?'💾 保存修改':'⏰ 定时发送'; toast((editingId?'保存':'提交')+'失败：'+error.message); return; }
   const wasEdit=!!editingId;
   cancelEdit();  // 重置表单 + 退出编辑态
-  toast(wasEdit ? '✅ 已保存修改'
+  toast(wasEdit ? (groupIds.length>1 ? '✅ 已保存，共发到 '+groupIds.length+' 个群' : '✅ 已保存修改')
     : (repeatMinutes
         ? '✅ 已设置 '+fmtRepeat(repeatMinutes)+'，发到 '+groupIds.length+' 个群'
         : '✅ 已加入队列，发到 '+groupIds.length+' 个群'));
