@@ -168,6 +168,22 @@ const SB=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 let webhooks=[];
 let allMessages=[];
 let editingId=null;
+let editingBatchIds=null;   // 编辑时，同一批（多群）所有行的 id
+// 同一批 = 内容/时间/重复/结束/状态全相同（多群时是同时创建的多行）
+function sameBatch(a,b){ return a.status===b.status && a.content===b.content && a.send_at===b.send_at
+    && a.repeat_minutes===b.repeat_minutes && a.repeat_until===b.repeat_until; }
+function whName(m){ return m.msg_webhooks?m.msg_webhooks.name:'（群已删除）'; }
+// 把多行按批合并成一组，保持原顺序；每组带 _ids / _names
+function groupRows(rows){
+  const map=new Map(), order=[];
+  for(const m of rows){
+    const k=[m.status,m.content,m.send_at,m.repeat_minutes,m.repeat_until].join('');
+    if(!map.has(k)){ map.set(k,{...m,_ids:[m.id],_names:[whName(m)]}); order.push(k); }
+    else { const g=map.get(k); g._ids.push(m.id); g._names.push(whName(m)); }
+  }
+  return order.map(k=>map.get(k));
+}
+function fmtGroups(names){ return names.length>1 ? names.join('、')+'（'+names.length+'个群）' : (names[0]||''); }
 
 function getCheckedWebhooks(){ return [...document.querySelectorAll('.wh-check:checked')].map(c=>c.value); }
 function toggleAllWebhooks(on){ document.querySelectorAll('.wh-check').forEach(c=>c.checked=on); }
@@ -235,8 +251,7 @@ async function loadMessages(){
   const pending=all.filter(m=>m.status==='pending').sort((a,b)=>a.send_at<b.send_at?-1:1);
   const history=all.filter(m=>m.status!=='pending').slice(0,30);
 
-  const groupName=m=>m.msg_webhooks?m.msg_webhooks.name:'（群已删除）';
-  document.getElementById('list-pending').innerHTML = pending.length ? pending.map(m=>{
+  document.getElementById('list-pending').innerHTML = pending.length ? groupRows(pending).map(m=>{
     const rep=m.repeat_minutes
       ? `<span class="tag tag-repeat">🔁 ${fmtRepeat(m.repeat_minutes)}</span>` : '';
     const extra=m.repeat_minutes
@@ -252,17 +267,17 @@ async function loadMessages(){
         </span>
       </div>
       <div class="content">${esc(m.content)}</div>
-      <div class="meta">📍 ${esc(groupName(m))} ｜ ⏰ ${m.repeat_minutes?'下次 ':''}${fmtTime(m.send_at)} 发送${extra}</div>
+      <div class="meta">📍 ${esc(fmtGroups(m._names))} ｜ ⏰ ${m.repeat_minutes?'下次 ':''}${fmtTime(m.send_at)} 发送${extra}</div>
     </div>`;}).join('') : '<p class="empty">没有待发送的消息</p>';
 
   const tagOf=s=>s==='sent'?'<span class="tag tag-sent">已发送</span>':'<span class="tag tag-cancelled">已取消</span>';
-  document.getElementById('list-history').innerHTML = history.length ? history.map(m=>{
+  document.getElementById('list-history').innerHTML = history.length ? groupRows(history).map(m=>{
     const times=m.sent_count>1?'（共发 '+m.sent_count+' 次）':'';
     return `
     <div class="msg-item">
       <div class="top"><span>${tagOf(m.status)} ${m.repeat_minutes?'<span class="tag tag-repeat">🔁 '+fmtRepeat(m.repeat_minutes)+'</span>':''}</span></div>
       <div class="content">${esc(m.content)}</div>
-      <div class="meta">📍 ${esc(groupName(m))} ｜ ${m.status==='sent'?'✅ 最后一次 '+fmtTime(m.sent_at)+' 已发出'+times:(m.sent_count?'已发 '+m.sent_count+' 次后停止':'原定 '+fmtTime(m.send_at))}</div>
+      <div class="meta">📍 ${esc(fmtGroups(m._names))} ｜ ${m.status==='sent'?'✅ 最后一次 '+fmtTime(m.sent_at)+' 已发出'+times:(m.sent_count?'已发 '+m.sent_count+' 次后停止':'原定 '+fmtTime(m.send_at))}</div>
     </div>`;}).join('') : '<p class="empty">还没有发送记录</p>';
 }
 
@@ -314,14 +329,14 @@ async function submitMessage(){
   const btn=document.getElementById('new-btn'); btn.disabled=true; btn.textContent=editingId?'保存中…':'提交中…';
   let error;
   if(editingId){
-    // 当前这条改成勾的第一个群
-    ({error}=await SB.from('scheduled_messages')
-      .update({...base, webhook_id:groupIds[0], attempt_count:0, dispatched_at:null, last_request_id:null})
-      .eq('id',editingId).eq('status','pending'));
-    // 多勾的群：补成新消息（一群一条），这样编辑里全选也能发到所有群
-    if(!error && groupIds.length>1){
-      const extra=groupIds.slice(1).map(id=>({...base, webhook_id:id}));
-      ({error}=await SB.from('scheduled_messages').insert(extra));
+    // 重新定义这条：删掉旧的一批（仅待发送的），按现在勾的群整批重建
+    if(editingBatchIds&&editingBatchIds.length){
+      ({error}=await SB.from('scheduled_messages').delete()
+        .in('id',editingBatchIds).eq('status','pending'));
+    }
+    if(!error){
+      const rows=groupIds.map(id=>({...base, webhook_id:id}));
+      ({error}=await SB.from('scheduled_messages').insert(rows));
     }
   }else{
     const rows=groupIds.map(id=>({...base, webhook_id:id}));
@@ -341,11 +356,14 @@ async function submitMessage(){
 function startEdit(id){
   const m=(allMessages||[]).find(x=>x.id===id);
   if(!m){ toast('找不到这条消息，请刷新'); return; }
+  // 载入整批（同内容/时间/重复的多群），把这一批的所有群都勾上
+  const batch=(allMessages||[]).filter(x=>sameBatch(x,m));
+  editingBatchIds=batch.map(x=>x.id);
   editingId=id;
   document.getElementById('form-title').textContent='✏️ 编辑定时消息';
   document.getElementById('new-btn').textContent='💾 保存修改';
   document.getElementById('cancel-edit-btn').classList.remove('hidden');
-  setCheckedWebhooks([m.webhook_id]);
+  setCheckedWebhooks(batch.map(x=>x.webhook_id));
   document.getElementById('new-time').value=toLocalInput(m.send_at);
   document.getElementById('new-content').value=m.content||'';
   const repSel=document.getElementById('new-repeat');
@@ -360,7 +378,7 @@ function startEdit(id){
 }
 
 function cancelEdit(){
-  editingId=null;
+  editingId=null; editingBatchIds=null;
   document.getElementById('form-title').textContent='✏️ 新建定时消息';
   document.getElementById('new-btn').textContent='⏰ 定时发送';
   document.getElementById('cancel-edit-btn').classList.add('hidden');
@@ -369,9 +387,14 @@ function cancelEdit(){
 }
 
 async function cancelMessage(id,isRepeat){
-  if(!confirm(isRepeat?'确定停止这条重复消息吗？停止后不再发送。':'确定取消这条待发送的消息吗？')) return;
+  const m=(allMessages||[]).find(x=>x.id===id);
+  if(!m){ toast('找不到这条消息，请刷新'); return; }
+  // 整批（多群）一起停/取消
+  const ids=(allMessages||[]).filter(x=>sameBatch(x,m)).map(x=>x.id);
+  const n=ids.length;
+  if(!confirm(isRepeat?'确定停止这条重复消息吗？停止后不再发送。'+(n>1?'（共 '+n+' 个群）':''):'确定取消这条待发送的消息吗？'+(n>1?'（共 '+n+' 个群）':''))) return;
   const {error}=await SB.from('scheduled_messages')
-    .update({status:'cancelled'}).eq('id',id).eq('status','pending');
+    .update({status:'cancelled'}).in('id',ids).eq('status','pending');
   if(error){ toast('取消失败：'+error.message); return; }
   toast('已取消'); loadMessages();
 }
